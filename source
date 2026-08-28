@@ -10565,29 +10565,43 @@ addcmd('oldconsole',{},function(args, speaker)
 	notify('Console','Press F9 to open the console')
 end)
 
--- Compat shim for Dex "Save to File".
--- Dex++/MoonDex call the old Syn signature saveinstance(object, filepath_string, options),
--- but modern executors use saveinstance(target, options_table) and reject a string at arg #2.
--- This wraps the global saveinstance so the old 3-arg calls keep working.
+-- Compat + anti-crash shim for Dex "Save to File".
+-- Wave's native signature is saveinstance(Object, FilePath, Options). Dex++ passes
+-- Options.Decompile = true, and decompiling a large tree makes Wave run out of memory
+-- and crash. This wraps saveinstance to (1) keep Wave's 3-arg call working, (2) fall
+-- back to the 2-arg (USSI) form if needed, and (3) tame the crash-prone options.
+-- Set IY_DECOMPILE_SAVE = true (before running dex) if you really want decompiled scripts.
 local function installSaveInstanceShim()
     pcall(function()
         if not saveinstance or (getgenv and getgenv().__iySaveShim) then return end
         if getgenv then getgenv().__iySaveShim = true end
         local real = (clonefunction and clonefunction(saveinstance)) or saveinstance
+        local function tame(opts)
+            opts = (typeof(opts) == "table") and opts or {}
+            -- Decompilation is the usual crash cause; off by default, with a hard timeout.
+            if not (getgenv and getgenv().IY_DECOMPILE_SAVE) then
+                opts.Decompile = false
+            end
+            if opts.DecompileTimeout == nil then opts.DecompileTimeout = 10 end
+            return opts
+        end
         local wrapped = function(a, b, c)
             if typeof(b) == "string" then
-                -- Old signature: (object, filepath, options) -> merge path into options
-                local opts = (typeof(c) == "table") and c or {}
+                local opts = tame(c)
+                -- Wave native: saveinstance(Object, FilePath, Options)
+                local ok, res = pcall(real, a, b, opts)
+                if ok then return res end
+                -- USSI-style: merge path into options -> saveinstance(target, options)
                 opts.FilePath = opts.FilePath or b
                 opts.filename = opts.filename or b
                 opts.object = opts.object or a
-                local ok, res = pcall(real, a, opts)       -- modern: (target, options)
+                ok, res = pcall(real, a, opts)
                 if ok then return res end
                 ok, res = pcall(real, opts)                -- single-table: (options)
                 if ok then return res end
-                return real(a, b, c)                       -- fallback: original call
+                return real(a, b, c)                       -- last resort: original call
             end
-            return real(a, b, c)
+            return real(a, tame(b), c)
         end
         if getgenv then getgenv().saveinstance = wrapped else saveinstance = wrapped end
     end)
