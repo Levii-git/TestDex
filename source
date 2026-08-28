@@ -10565,43 +10565,53 @@ addcmd('oldconsole',{},function(args, speaker)
 	notify('Console','Press F9 to open the console')
 end)
 
--- Compat + anti-crash shim for Dex "Save to File".
--- Wave's native signature is saveinstance(Object, FilePath, Options). Dex++ passes
--- Options.Decompile = true, and decompiling a large tree makes Wave run out of memory
--- and crash. This wraps saveinstance to (1) keep Wave's 3-arg call working, (2) fall
--- back to the 2-arg (USSI) form if needed, and (3) tame the crash-prone options.
--- Set IY_DECOMPILE_SAVE = true (before running dex) if you really want decompiled scripts.
+-- Compat + anti-crash + Studio-compatible shim for Dex "Save to File".
+-- Backend on Wave is UniversalSynSaveInstance: saveinstance(Object, FilePath, Options).
+-- Problems it fixes:
+--   1) Dex++ forces Options.Decompile = true -> decompiling a large tree eats all memory
+--      and CRASHES the Roblox client. We disable Decompile (a 3D model needs no scripts).
+--   2) When saving a single Object, USSI must be told IsModel/Object or it writes a generic
+--      .txt that Studio can't import. We force Object + IsModel + Binary + mode="full" so it
+--      writes a proper .rbxm (importable via Studio right-click -> "Insert from File").
+--   3) BoostFPS disables 3D rendering during the save -> far less strain on big trees.
+-- Set getgenv().IY_DECOMPILE_SAVE = true (before running dex) to keep decompiled scripts.
 local function installSaveInstanceShim()
     pcall(function()
         if not saveinstance or (getgenv and getgenv().__iySaveShim) then return end
         if getgenv then getgenv().__iySaveShim = true end
         local real = (clonefunction and clonefunction(saveinstance)) or saveinstance
-        local function tame(opts)
-            opts = (typeof(opts) == "table") and opts or {}
-            -- Decompilation is the usual crash cause; off by default, with a hard timeout.
+        local wrapped = function(a, b, c)
+            local opts = (typeof(c) == "table") and c or ((typeof(b) == "table") and b or {})
+
+            -- Anti-crash: no decompilation unless explicitly opted in.
             if not (getgenv and getgenv().IY_DECOMPILE_SAVE) then
                 opts.Decompile = false
             end
             if opts.DecompileTimeout == nil then opts.DecompileTimeout = 10 end
-            return opts
-        end
-        local wrapped = function(a, b, c)
-            if typeof(b) == "string" then
-                local opts = tame(c)
-                -- Wave native: saveinstance(Object, FilePath, Options)
-                local ok, res = pcall(real, a, b, opts)
-                if ok then return res end
-                -- USSI-style: merge path into options -> saveinstance(target, options)
-                opts.FilePath = opts.FilePath or b
-                opts.filename = opts.filename or b
-                opts.object = opts.object or a
-                ok, res = pcall(real, a, opts)
-                if ok then return res end
-                ok, res = pcall(real, opts)                -- single-table: (options)
-                if ok then return res end
-                return real(a, b, c)                       -- last resort: original call
+            if opts.BoostFPS == nil then opts.BoostFPS = true end
+
+            local savingObject = (typeof(a) == "Instance" and a ~= game)
+            if savingObject then
+                -- Force a clean, Studio-openable model save.
+                opts.Object = a
+                opts.IsModel = true
+                opts.Binary = true
+                opts.mode = "full"   -- "optimized" is not supported with the Object option
             end
-            return real(a, tame(b), c)
+
+            if typeof(b) == "string" then
+                local path = b:gsub("%.%w+$", "")            -- strip odd extensions (e.g. .txt)
+                if savingObject then path = path .. ".rbxm" end
+                local ok, res = pcall(real, a, path, opts)    -- native: (Object, FilePath, Options)
+                if ok then return res end
+                opts.FilePath = path
+                ok, res = pcall(real, a, opts)                -- (target, options)
+                if ok then return res end
+                ok, res = pcall(real, opts)                   -- (options)
+                if ok then return res end
+                return real(a, b, c)                          -- last resort: original call
+            end
+            return real(a, opts)
         end
         if getgenv then getgenv().saveinstance = wrapped else saveinstance = wrapped end
     end)
