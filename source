@@ -10565,13 +10565,43 @@ addcmd('oldconsole',{},function(args, speaker)
 	notify('Console','Press F9 to open the console')
 end)
 
+-- Compat shim for Dex "Save to File".
+-- Dex++/MoonDex call the old Syn signature saveinstance(object, filepath_string, options),
+-- but modern executors use saveinstance(target, options_table) and reject a string at arg #2.
+-- This wraps the global saveinstance so the old 3-arg calls keep working.
+local function installSaveInstanceShim()
+    pcall(function()
+        if not saveinstance or (getgenv and getgenv().__iySaveShim) then return end
+        if getgenv then getgenv().__iySaveShim = true end
+        local real = (clonefunction and clonefunction(saveinstance)) or saveinstance
+        local wrapped = function(a, b, c)
+            if typeof(b) == "string" then
+                -- Old signature: (object, filepath, options) -> merge path into options
+                local opts = (typeof(c) == "table") and c or {}
+                opts.FilePath = opts.FilePath or b
+                opts.filename = opts.filename or b
+                opts.object = opts.object or a
+                local ok, res = pcall(real, a, opts)       -- modern: (target, options)
+                if ok then return res end
+                ok, res = pcall(real, opts)                -- single-table: (options)
+                if ok then return res end
+                return real(a, b, c)                       -- fallback: original call
+            end
+            return real(a, b, c)
+        end
+        if getgenv then getgenv().saveinstance = wrapped else saveinstance = wrapped end
+    end)
+end
+
 addcmd("explorer", {"dex"}, function(args, speaker)
     notify("Loading", "Hold on a sec")
+    installSaveInstanceShim()
     loadstring(game:HttpGet("https://github.com/AZYsGithub/DexPlusPlus/releases/latest/download/out.lua"))()
 end)
 
 addcmd("moondex", {"mdex"}, function(args, speaker)
     notify("Loading", "Hold on a sec")
+    installSaveInstanceShim()
     loadstring(game:HttpGet("https://raw.githubusercontent.com/infyiff/backup/main/dex.lua"))()
 end)
 
