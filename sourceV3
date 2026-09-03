@@ -10654,13 +10654,22 @@ do
                         local inset = service.GuiService:GetGuiInset()
                         hits = pgui:GetGuiObjectsAtPosition(mp.X - inset.X, mp.Y - inset.Y)
                     end
+                    -- GetGuiObjectsAtPosition returns every stacked GUI under the cursor
+                    -- (including full-screen "Handler" click-catchers). Pick the SMALLEST
+                    -- one with a node = the precise element clicked, never the big overlay.
+                    local best, bestArea = nil, nil
                     for _, guiObj in ipairs(hits) do
-                        local n = nodes[guiObj]
-                        if n then
-                            selection:Set(n)
-                            Explorer.ViewNode(n)
-                            break
+                        if nodes[guiObj] then
+                            local sz = guiObj.AbsoluteSize
+                            local area = sz.X * sz.Y
+                            if area > 0 and (bestArea == nil or area < bestArea) then
+                                best, bestArea = guiObj, area
+                            end
                         end
+                    end
+                    if best then
+                        selection:Set(nodes[best])
+                        Explorer.ViewNode(nodes[best])
                     end
                 end
             end)
